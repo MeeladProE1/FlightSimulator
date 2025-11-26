@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Flight Simulator (Mobile)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+            background-color: #000011;
+            touch-action: none; /* Prevent browser zooming/scrolling */
+        }
+        #hud {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #00ff00; 
+            text-shadow: 0 0 5px #00ff00;
+            background: rgba(0, 20, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            pointer-events: none;
+            border: 1px solid #005500;
+            font-size: 14px;
+            text-align: right;
+        }
+        #controls-hint {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ff00;
+            text-shadow: 0 0 5px #00ff00;
+            background: rgba(0, 20, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            pointer-events: none;
+            border: 1px solid #005500;
+            font-size: 12px;
+            max-width: 200px;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(0, 255, 0, 0.5);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 2px;
+            height: 2px;
+            background: #00ff00;
+            transform: translate(-50%, -50%);
+        }
+        #walk-msg {
+            display: none;
+            position: absolute;
+            top: 30%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 20px;
+            text-shadow: 2px 2px 0 #000;
+            pointer-events: none;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        /* --- TOUCH CONTROLS --- */
+        .joystick-zone {
+            position: absolute;
+            bottom: 40px;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            touch-action: none;
+        }
+        #stick-left { left: 40px; }
+        #stick-right { right: 40px; }
+        
+        .knob {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 50px;
+            height: 50px;
+            background: rgba(0, 255, 0, 0.3);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        #action-btn {
+            position: absolute;
+            bottom: 180px;
+            right: 40px;
+            width: 60px;
+            height: 60px;
+            background: rgba(255, 0, 0, 0.3);
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            user-select: none;
+        }
+        #action-btn:active { background: rgba(255, 0, 0, 0.6); }
+
+        /* Hide specific PC hints on mobile if needed, 
+           but we keep them for context */
+        @media (min-width: 1024px) {
+            .joystick-zone, #action-btn {
+                display: none; /* Hide touch controls on big desktops if desired */
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls-hint">
+        <div><b>Controls:</b></div>
+        <div><b>Mobile:</b> Use Joysticks</div>
+        <div>L-Stick: Speed/Turn</div>
+        <div>R-Stick: Pitch/Roll</div>
+        <div>Button: Enter/Exit</div>
+        <hr style="border-color:#005500">
+        <div><b>PC:</b> WASD / Arrows</div>
+        <div>Space/Shift: Speed</div>
+        <div>F: Enter/Exit</div>
+    </div>
+
+    <div id="hud">
+        <div class="metric">ALT: <span id="alt">0</span></div>
+        <div class="metric">SPD: <span id="speed">0</span></div>
+        <div class="metric">HDG: <span id="heading">0</span></div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="walk-msg">TAP BUTTON TO ENTER</div>
+
+    <!-- Touch Controls -->
+    <div id="stick-left" class="joystick-zone"><div class="knob"></div></div>
+    <div id="stick-right" class="joystick-zone"><div class="knob"></div></div>
+    <div id="action-btn">F</div>
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            baseSpeed: 0.0,
+            maxSpeed: 4.0,
+            minSpeed: 0.0,
+            turnSpeed: 0.04,
+            rollSpeed: 0.05,
+            pitchSpeed: 0.03,
+            worldSize: 20000, 
+            chunkSize: 200
+        };
+
+        // --- Global Variables ---
+        let scene, camera, renderer;
+        let airplane;
+        let terrainGroup;
+        let airportGroup;
+        let keys = {};
+        
+        // Touch Inputs
+        const joystick = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
+        let actionBtnPressed = false;
+
+        // Physics & Collision
+        const raycaster = new THREE.Raycaster();
+        const downVector = new THREE.Vector3(0, -1, 0);
+
+        // Crash System
+        let isCrashed = false;
+        let debrisObjects = [];
+        let fireParticles = [];
+        let crashLight; 
+        
+        // REUSABLE GEOMETRIES (Memory Optimization)
+        const particleGeo = new THREE.BoxGeometry(1, 1, 1);
+        const debrisGeoSmall = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        
+        // Physics state
+        const state = {
+            speed: CONFIG.baseSpeed,
+            roll: 0,
+            pitch: 0,
+            yaw: 0
+        };
+        
+        // Walking State
+        let isWalking = false;
+        let walkPosition = new THREE.Vector3();
+        let walkRotation = new THREE.Euler(0, 0, 0, 'YXZ');
+
+        // UI Elements
+        const uiAlt = document.getElementById('alt');
+        const uiSpeed = document.getElementById('speed');
+        const uiHeading = document.getElementById('heading');
+        const uiWalkMsg = document.getElementById('walk-msg');
+
+        // --- Initialization ---
+        function init() {
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000011); 
+            scene.fog = new THREE.Fog(0x000011, 200, 1500); // Reduced fog for mobile perf
+
+            // 2. Camera 
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+            
+            // 3. Renderer (Optimized for Mobile)
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: false, 
+                powerPreference: "high-performance" 
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = false; 
+            // Cap Pixel Ratio to 1.5 to save battery/heat on high-dpi phones
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Lighting
+            const ambientLight = new THREE.HemisphereLight(0x222244, 0x111122, 0.6); 
+            scene.add(ambientLight);
+            const moonLight = new THREE.DirectionalLight(0xaaccff, 0.5); 
+            moonLight.position.set(100, 500, 100);
+            scene.add(moonLight);
+
+            // 5. Objects
+            createStars();
+            createAirport();
+            createAirplane();
+            createTerrain();
+            
+            // 6. Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            setupInputListeners(); // Keys + Touch
+
+            // Start Loop
+            animate();
+        }
+
+        function setupInputListeners() {
+            // Keyboard
+            document.addEventListener('keydown', (e) => {
+                keys[e.code] = true;
+                if (isCrashed && e.code === 'KeyR') location.reload();
+                if (e.code === 'KeyF') toggleWalkMode();
+            });
+            document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+            // Touch Action Button
+            const btn = document.getElementById('action-btn');
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                toggleWalkMode();
+                actionBtnPressed = true;
+            });
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                actionBtnPressed = false;
+            });
+
+            // Joysticks
+            setupJoystick('stick-left', 'left');
+            setupJoystick('stick-right', 'right');
+        }
+
+        function setupJoystick(elmId, side) {
+            const zone = document.getElementById(elmId);
+            const knob = zone.querySelector('.knob');
+            let touchId = null;
+            const maxDist = 35; // Max joystick travel
+
+            zone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.changedTouches[0];
+                touchId = touch.identifier;
+                updateStick(touch.clientX, touch.clientY);
+            });
+
+            zone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for(let i=0; i<e.changedTouches.length; i++) {
+                    if(e.changedTouches[i].identifier === touchId) {
+                        updateStick(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+                        break;
+                    }
+                }
+            });
+
+            const endTouch = (e) => {
+                e.preventDefault();
+                for(let i=0; i<e.changedTouches.length; i++) {
+                    if(e.changedTouches[i].identifier === touchId) {
+                        touchId = null;
+                        joystick[side].x = 0;
+                        joystick[side].y = 0;
+                        knob.style.transform = `translate(-50%, -50%)`;
+                        break;
+                    }
+                }
+            };
+
+            zone.addEventListener('touchend', endTouch);
+            zone.addEventListener('touchcancel', endTouch);
+
+            function updateStick(clientX, clientY) {
+                const rect = zone.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                
+                let dx = clientX - centerX;
+                let dy = clientY - centerY;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (dist > maxDist) {
+                    dx = (dx / dist) * maxDist;
+                    dy = (dy / dist) * maxDist;
+                }
+
+                // Normalize -1 to 1
+                joystick[side].x = dx / maxDist;
+                joystick[side].y = dy / maxDist;
+
+                knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+            }
+        }
+
+        function toggleWalkMode() {
+            if (isCrashed) return;
+
+            if (!isWalking) {
+                // Enter Walk Mode (Only if stopped)
+                if (state.speed < 0.1 && airplane.position.y < 10) {
+                    isWalking = true;
+                    walkPosition.copy(airplane.position);
+                    walkPosition.x += 5; 
+                    walkPosition.y = 2; 
+                    walkRotation.set(0, Math.PI, 0);
+                    
+                    document.getElementById('crosshair').style.display = 'none';
+                    document.getElementById('hud').style.display = 'none';
+                }
+            } else {
+                // Exit Walk Mode (Only near plane)
+                if (walkPosition.distanceTo(airplane.position) < 15) {
+                    isWalking = false;
+                    document.getElementById('crosshair').style.display = 'block';
+                    document.getElementById('hud').style.display = 'block';
+                    uiWalkMsg.style.display = 'none';
+                }
+            }
+        }
+
+        // ... [Creation functions: createAirport, createAirplane, etc.] ...
+        // Re-using optimized creation from previous version, but with memory tweaks
+
+        function createAirport() {
+            airportGroup = new THREE.Group();
+            scene.add(airportGroup);
+
+            // Runway
+            const runway = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 1000),
+                new THREE.MeshPhongMaterial({ color: 0x111111, shininess: 5 })
+            );
+            runway.rotation.x = -Math.PI / 2;
+            runway.position.set(0, 0.2, 0); 
+            airportGroup.add(runway);
+
+            // Markings (Single Geometry Merge would be better, but loop is small)
+            const dashGeo = new THREE.PlaneGeometry(2, 30);
+            const dashMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            for(let i=0; i<10; i++) {
+                const dash = new THREE.Mesh(dashGeo, dashMat);
+                dash.rotation.x = -Math.PI / 2;
+                dash.position.set(0, 0.3, -400 + i * 90);
+                airportGroup.add(dash);
+            }
+
+            // Terminal
+            const terminalGroup = new THREE.Group();
+            terminalGroup.position.set(100, 0, 0);
+            airportGroup.add(terminalGroup);
+            
+            // Simple Building Blocks
+            const wallMat = new THREE.MeshPhongMaterial({ color: 0x444455 });
+            const wBack = new THREE.Mesh(new THREE.BoxGeometry(1, 15, 80), wallMat);
+            wBack.position.set(30, 7.5, 0);
+            terminalGroup.add(wBack);
+
+            const tFloor = new THREE.Mesh(new THREE.BoxGeometry(60, 1, 80), new THREE.MeshPhongMaterial({ color: 0x333333 }));
+            tFloor.position.y = 0.5;
+            terminalGroup.add(tFloor);
+
+            // Terminal Light
+            const terminalLight = new THREE.PointLight(0xffffff, 0.8, 50);
+            terminalLight.position.set(0, 10, 0);
+            terminalGroup.add(terminalLight);
+            
+            // Desks (Optimized)
+            const deskGeo = new THREE.BoxGeometry(2, 2.5, 6);
+            const deskMat = new THREE.MeshPhongMaterial({color: 0xffffff});
+            for(let i=0; i<3; i++) {
+                const desk = new THREE.Mesh(deskGeo, deskMat);
+                desk.position.set(25, 1.25, -30 + i * 20);
+                terminalGroup.add(desk);
+            }
+        }
+
+        function createStars() {
+            const starGeom = new THREE.BufferGeometry();
+            const starCount = 600; 
+            const positions = new Float32Array(starCount * 3);
+            for(let i=0; i<starCount * 3; i++) {
+                positions[i] = (Math.random() - 0.5) * 8000; 
+                if (i % 3 === 1 && positions[i] < 500) positions[i] += 1000; 
+            }
+            starGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const starMat = new THREE.PointsMaterial({color: 0xffffff, size: 2, sizeAttenuation: false});
+            const starField = new THREE.Points(starGeom, starMat);
+            scene.add(starField);
+        }
+
+        function triggerCrash() {
+            if(isCrashed) return;
+            isCrashed = true;
+            airplane.visible = false; 
+            crashLight = new THREE.PointLight(0xff5500, 2, 80);
+            crashLight.position.copy(airplane.position);
+            crashLight.position.y += 5;
+            scene.add(crashLight);
+
+            const colors = [0xe74c3c, 0xffffff, 0x888888, 0x34495e]; 
+            const impactForce = Math.min(state.speed, 2.0); // Cap force for mobile physics
+            
+            // Reduced Debris count for mobile
+            // Use reused geometry
+            const debrisMat = new THREE.MeshPhongMaterial({ color: 0x888888, flatShading: true });
+
+            for(let i=0; i<40; i++) {
+                const part = new THREE.Mesh(debrisGeoSmall, debrisMat);
+                part.position.copy(airplane.position);
+                part.position.x += (Math.random() - 0.5) * 4;
+                part.position.y += (Math.random() - 0.5) * 4;
+                part.position.z += (Math.random() - 0.5) * 4;
+                
+                const speed = 10 + (impactForce * 10);
+                part.userData.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * speed, 
+                    Math.random() * speed * 0.5 + 5, 
+                    (Math.random() - 0.5) * speed
+                );
+                part.userData.rotVel = new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5));
+                scene.add(part);
+                debrisObjects.push(part);
+            }
+            
+            document.getElementById('controls-hint').innerHTML = "<h1 style='color: #e74c3c;'>CRASHED!</h1><p>Tap Refresh to Restart</p>";
+        }
+
+        function updateCrashFX() {
+            if (crashLight) crashLight.intensity = 1.5 + Math.random();
+            
+            // Debris Physics
+            for (let i = 0; i < debrisObjects.length; i++) {
+                const obj = debrisObjects[i];
+                obj.userData.velocity.y -= 0.6; 
+                obj.position.add(obj.userData.velocity);
+                obj.rotation.x += obj.userData.rotVel.x;
+                obj.rotation.y += obj.userData.rotVel.y;
+                if (obj.position.y < 0) {
+                    obj.position.y = 0;
+                    obj.userData.velocity.y *= -0.5; 
+                    obj.userData.velocity.x *= 0.8;  
+                    obj.userData.velocity.z *= 0.8;
+                }
+            }
+
+            // Particles (Pooled limit: 100 max active)
+            if (fireParticles.length < 100) {
+                for(let k=0; k<2; k++) { // Low spawn rate
+                    const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.6 });
+                    const p = new THREE.Mesh(particleGeo, mat);
+                    p.scale.setScalar(Math.random() * 0.5 + 0.1);
+                    p.position.copy(airplane.position);
+                    p.position.x += (Math.random()-0.5)*5;
+                    p.position.z += (Math.random()-0.5)*5;
+                    p.userData.velocity = new THREE.Vector3(0, Math.random()*0.5+0.1, 0);
+                    p.userData.age = 0;
+                    scene.add(p);
+                    fireParticles.push(p);
+                }
+            }
+
+            for (let i = fireParticles.length - 1; i >= 0; i--) {
+                const p = fireParticles[i];
+                p.position.add(p.userData.velocity);
+                p.userData.age++;
+                p.material.opacity -= 0.02;
+                if (p.material.opacity <= 0) {
+                    scene.remove(p);
+                    p.geometry.dispose(); // Cleanup
+                    p.material.dispose();
+                    fireParticles.splice(i, 1);
+                }
+            }
+        }
+
+        function createAirplane() {
+            airplane = new THREE.Group();
+            const fuselageMat = new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: true });
+            const wingMat = new THREE.MeshPhongMaterial({ color: 0xe74c3c, flatShading: true });
+            const metalMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4 });
+
+            const fuselage = new THREE.Mesh(new THREE.ConeGeometry(0.8, 8, 6), fuselageMat);
+            fuselage.rotation.x = Math.PI / 2;
+            airplane.add(fuselage);
+
+            const wings = new THREE.Mesh(new THREE.BoxGeometry(10, 0.2, 2), wingMat);
+            airplane.add(wings);
+
+            const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1.5), wingMat);
+            tail.position.set(0, 0, 3.5);
+            airplane.add(tail);
+
+            const propeller = new THREE.Mesh(new THREE.BoxGeometry(4, 0.1, 0.2), metalMat);
+            propeller.position.z = -4.1;
+            airplane.userData.propeller = propeller; 
+            airplane.add(propeller);
+            
+            scene.add(airplane);
+            airplane.position.set(50, 2, 0); 
+            airplane.rotation.y = -Math.PI / 2;
+        }
+
+        function createTerrain() {
+            terrainGroup = new THREE.Group();
+            scene.add(terrainGroup);
+
+            const groundMat = new THREE.MeshPhongMaterial({ color: 0x114422, flatShading: true, shininess: 0 });
+            // Very Low Poly Terrain (30x30)
+            const groundGeom = new THREE.PlaneGeometry(20000, 20000, 30, 30);
+            
+            const positions = groundGeom.attributes.position.array;
+            for (let i = 0; i < positions.length; i += 3) {
+                const x = positions[i];
+                const y = positions[i+1];
+                const dist = Math.sqrt(x*x + y*y);
+                const isAirport = (Math.abs(x) < 300 && Math.abs(y) < 1300);
+
+                if (dist > 300 && !isAirport) {
+                    positions[i+2] = Math.random() * 100; // Mountains
+                } else if (isAirport) {
+                    positions[i+2] = 0; 
+                }
+            }
+            
+            groundGeom.computeVertexNormals();
+            const ground = new THREE.Mesh(groundGeom, groundMat);
+            ground.name = "ground"; 
+            ground.rotation.x = -Math.PI / 2;
+            terrainGroup.add(ground);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updatePhysics() {
+            if (isCrashed) {
+                updateCrashFX();
+                return; 
+            }
+
+            // --- WALK MODE ---
+            if (isWalking) {
+                // Inputs: Touch Stick or Keyboard
+                const moveZ = joystick.left.y || (keys['KeyW'] ? -1 : 0) + (keys['KeyS'] ? 1 : 0);
+                const moveX = joystick.left.x || (keys['KeyA'] ? -1 : 0) + (keys['KeyD'] ? 1 : 0);
+                
+                // Right stick rotates camera in Walk Mode
+                if (joystick.right.x) walkRotation.y -= joystick.right.x * 0.05;
+                if (keys['ArrowLeft']) walkRotation.y += 0.05;
+                if (keys['ArrowRight']) walkRotation.y -= 0.05;
+
+                // Move
+                const moveSpeed = (keys['ShiftLeft'] || actionBtnPressed) ? 1.5 : 0.6;
+                const direction = new THREE.Vector3(moveX * moveSpeed, 0, moveZ * moveSpeed);
+                direction.applyEuler(new THREE.Euler(0, walkRotation.y, 0));
+                
+                walkPosition.add(direction);
+                
+                // Height Check
+                const inTerminal = (walkPosition.x > 70 && walkPosition.x < 130 && Math.abs(walkPosition.z) < 40);
+                const targetY = inTerminal ? 3 : 2;
+                walkPosition.y += (targetY - walkPosition.y) * 0.2;
+
+                camera.position.copy(walkPosition);
+                camera.rotation.copy(walkRotation);
+
+                if (walkPosition.distanceTo(airplane.position) < 15) {
+                    uiWalkMsg.style.display = 'block';
+                    uiWalkMsg.innerText = "TAP F TO ENTER";
+                } else {
+                    uiWalkMsg.style.display = 'none';
+                }
+                return;
+            }
+
+            // --- FLIGHT MODE ---
+            if (!airplane) return;
+
+            // Inputs: Combine Keyboard and Joystick
+            // Left Stick Y: Throttle | Keyboard Space/Shift
+            let throttleInput = -joystick.left.y; 
+            if (keys['Space']) throttleInput = 1;
+            if (keys['ShiftLeft']) throttleInput = -1;
+
+            // Right Stick Y: Pitch | Keyboard W/S
+            let pitchInput = joystick.right.y;
+            if (keys['KeyS'] || keys['ArrowDown']) pitchInput = 1;
+            if (keys['KeyW'] || keys['ArrowUp']) pitchInput = -1;
+
+            // Right Stick X: Roll | Keyboard A/D
+            let rollInput = joystick.right.x;
+            if (keys['KeyA'] || keys['ArrowLeft']) rollInput = -1;
+            if (keys['KeyD'] || keys['ArrowRight']) rollInput = 1;
+
+            // Left Stick X: Yaw | Keyboard Q/E
+            let yawInput = joystick.left.x;
+            if (keys['KeyQ']) yawInput = 1;
+            if (keys['KeyE']) yawInput = -1;
+
+            // Physics Update
+            if (throttleInput > 0.1) state.speed = Math.min(state.speed + 0.05, CONFIG.maxSpeed);
+            else if (throttleInput < -0.1) state.speed = Math.max(state.speed - 0.05, CONFIG.minSpeed);
+
+            const targetPitch = pitchInput * CONFIG.pitchSpeed;
+            const targetRoll = -rollInput * CONFIG.rollSpeed; // Invert roll for stick feel
+            const targetYaw = -yawInput * CONFIG.turnSpeed;
+
+            airplane.rotateX(targetPitch);
+            airplane.rotateZ(targetRoll);
+            airplane.rotateY(targetYaw);
+
+            airplane.translateZ(-state.speed);
+            airplane.userData.propeller.rotation.z += 0.8 * state.speed;
+
+            // Camera Follow
+            const relativeCameraOffset = new THREE.Vector3(0, 10, 30);
+            const cameraOffset = relativeCameraOffset.applyMatrix4(airplane.matrixWorld);
+            camera.position.lerp(cameraOffset, 0.1);
+            camera.lookAt(airplane.position);
+
+            // HUD
+            uiAlt.innerText = Math.round(airplane.position.y);
+            uiSpeed.innerText = Math.round(state.speed * 100);
+            
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(airplane.quaternion);
+            const angle = Math.atan2(forward.x, forward.z);
+            let degrees = Math.round(angle * (180 / Math.PI));
+            if (degrees < 0) degrees += 360;
+            uiHeading.innerText = degrees;
+
+            // Collisions
+            raycaster.set(airplane.position, downVector);
+            const groundMesh = terrainGroup.getObjectByName("ground");
+            if (groundMesh) {
+                const intersects = raycaster.intersectObject(groundMesh);
+                if (intersects.length > 0) {
+                    if (intersects[0].distance < 3) {
+                        if (state.speed < 1.5) {
+                            airplane.position.y = intersects[0].point.y + 2.0; // Safe Taxi
+                        } else {
+                            triggerCrash();
+                        }
+                    }
+                } else if (airplane.position.y < 2) {
+                     if (state.speed < 1.5) airplane.position.y = 2.0;
+                     else triggerCrash();
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updatePhysics();
+            renderer.render(scene, camera);
+        }
+
+        window.onload = init;
+
+    </script>
+</body>
+</html>
